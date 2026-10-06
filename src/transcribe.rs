@@ -1149,6 +1149,14 @@ fn phrases(
     for word in words {
         *per_segment.entry(word.segment).or_default() += 1;
     }
+    // Whisper segments with a sentence end in them: whisper sometimes stops
+    // punctuating for minutes, and a missing sentence end then means nothing.
+    let punctuated_segments: std::collections::HashSet<usize> = words
+        .iter()
+        .filter(|w| ends_sentence(&w.text))
+        .map(|w| w.segment)
+        .collect();
+
     // First cut at sentence ends and region changes, so each piece has one voice.
     let mut pieces: Vec<Phrase> = Vec::new();
     for word in words {
@@ -1208,12 +1216,18 @@ fn phrases(
     // A sentence is never split between speakers: a piece that stops without
     // a sentence end is joined to the next one when that follows within a
     // short pause, and the speaker is then chosen for the sentence as a whole.
+    // Where whisper wrote no punctuation only the voices tell where a line
+    // ends, so there only pieces of the same speaker are joined.
     let mut sentences: Vec<Phrase> = Vec::new();
     for piece in pieces {
         match sentences.last_mut() {
             Some(previous)
                 if !ends_sentence(previous.words.last().map_or("", String::as_str))
-                    && piece.start_ms - previous.end_ms < 3000 =>
+                    && piece.start_ms - previous.end_ms < 3000
+                    && ((punctuated_segments.contains(&previous.segment)
+                        && punctuated_segments.contains(&piece.segment))
+                        || speakers.speaker(previous.start_ms, previous.end_ms)
+                            == speakers.speaker(piece.start_ms, piece.end_ms)) =>
             {
                 previous.words.extend(piece.words);
                 previous.end_ms = piece.end_ms.max(previous.end_ms);
