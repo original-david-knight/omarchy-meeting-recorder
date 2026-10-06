@@ -1149,7 +1149,6 @@ fn phrases(
     for word in words {
         *per_segment.entry(word.segment).or_default() += 1;
     }
-
     // First cut at sentence ends and region changes, so each piece has one voice.
     let mut pieces: Vec<Phrase> = Vec::new();
     for word in words {
@@ -1664,5 +1663,80 @@ mod tests {
         assert!(!voice_heard(Some(&heard), 30_000, 32_000));
         assert!(!voice_heard(Some(&[]), 0, 1_000));
         assert!(voice_heard(None, 0, 1_000));
+    }
+
+    /// Whisper's words for `text` in one of its segments, 300 ms apart.
+    fn words_at(segment: usize, start_ms: i64, text: &str) -> Vec<Word> {
+        text.split_whitespace()
+            .zip((start_ms..).step_by(300))
+            .map(|(text, start_ms)| Word {
+                text: text.into(),
+                start_ms,
+                end_ms: start_ms + 250,
+                no_speech: 0.0,
+                segment,
+            })
+            .collect()
+    }
+
+    /// The lines of ten seconds of sound on the other side, as (speaker, text).
+    fn remote_lines(words: &[Word], turns: Vec<crate::diarize::Turn>) -> Vec<(String, String)> {
+        let track = frames_at(&[0.1; 334]);
+        let region = Region {
+            start: 0,
+            onset: 0,
+            end: track.len(),
+        };
+        let glued = Glued::new(&track, &[region]);
+        phrases(
+            words,
+            &glued,
+            &Speakers::Side("Remote", turns),
+            &track,
+            false,
+        )
+        .into_iter()
+        .map(|s| (s.speaker, s.text))
+        .collect()
+    }
+
+    #[test]
+    fn voices_split_the_lines_where_whisper_writes_no_punctuation() {
+        let words = [
+            words_at(0, 500, "so we can ship it today"),
+            words_at(1, 2800, "yeah i agree with that"),
+            words_at(2, 4800, "then let us do it"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        let turns = vec![turn(0, 2600, 0), turn(2600, 4600, 1), turn(4600, 10_000, 0)];
+        assert_eq!(
+            remote_lines(&words, turns),
+            [
+                ("Remote 1".into(), "so we can ship it today".into()),
+                ("Remote 2".into(), "yeah i agree with that".into()),
+                ("Remote 1".into(), "then let us do it".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_punctuated_sentence_stays_whole_when_the_voices_flicker() {
+        let words = [
+            words_at(0, 500, "Is"),
+            words_at(0, 1100, "the release we tested yesterday approved, right?"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+        let turns = vec![turn(0, 800, 1), turn(800, 10_000, 0)];
+        assert_eq!(
+            remote_lines(&words, turns),
+            [(
+                "Remote 1".into(),
+                "Is the release we tested yesterday approved, right?".into()
+            )]
+        );
     }
 }
